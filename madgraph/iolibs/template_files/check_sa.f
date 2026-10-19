@@ -58,6 +58,12 @@ c     in coupl.inc .
         TOTALMASS = TOTALMASS + PMASS(I)
       ENDDO
 
+C     With a momenta file as argument, evaluate and time all its points instead of one.
+      IF (COMMAND_ARGUMENT_COUNT().GT.0) THEN
+        CALL EVALUATE_MOMENTA_FILE()
+        STOP
+      ENDIF
+
 c---  Now use a simple multipurpose PS generator (RAMBO) just to get a 
 c     RANDOM set of four momenta of given masses pmass(i) to be used to evaluate 
 c     the MadGraph5_aMC@NLO matrix-element.       
@@ -148,6 +154,92 @@ c      write (*,*) "-------------------------------------------------"
 
       end
     
+      SUBROUTINE EVALUATE_MOMENTA_FILE()
+C**************************************************************************
+C     Usage: ./check <momenta.bin> [<me_out.txt> [<first> <count>]]
+C     Evaluates the phase-space points of a raw binary file: native doubles,
+C     (E,px,py,pz) per leg per event, no header (e.g. MadMatrix check_sa.exe
+C     --dump-momenta). Prints one matrix element per line with 17 significant
+C     digits, to <me_out.txt> if given, else stdout. <first> (0-based) and
+C     <count> select a slice of the events. The wall-clock time of the
+C     matrix-element calls alone, without reading or writing, goes to stderr.
+C**************************************************************************
+      IMPLICIT NONE
+      INCLUDE "nexternal.inc"
+      REAL*8, ALLOCATABLE :: P(:,:,:), MATELEM(:)
+      CHARACTER*512 MOMENTA_FILE, ME_FILE
+      CHARACTER*32 ARG
+      INTEGER NARGS, IOS, IN_UNIT, OUT_UNIT
+      INTEGER*8 FIRST, MAXEVT, NEVT, I, EVENT_BYTES, FILE_BYTES
+      INTEGER*8 T0, T1, RATE
+      REAL*8 SECONDS
+
+      NARGS = COMMAND_ARGUMENT_COUNT()
+      IF (NARGS.EQ.3 .OR. NARGS.GT.4) THEN
+        WRITE (0,*) 'Usage: ./check <momenta.bin> ',
+     &              '[<me_out.txt> [<first> <count>]]'
+        STOP 1
+      ENDIF
+      CALL GET_COMMAND_ARGUMENT(1, MOMENTA_FILE)
+      FIRST = 0
+      MAXEVT = -1
+      IF (NARGS.EQ.4) THEN
+        CALL GET_COMMAND_ARGUMENT(3, ARG)
+        READ (ARG,*) FIRST
+        CALL GET_COMMAND_ARGUMENT(4, ARG)
+        READ (ARG,*) MAXEVT
+      ENDIF
+
+      EVENT_BYTES = 8 * 4 * NEXTERNAL
+      INQUIRE (FILE=TRIM(MOMENTA_FILE), SIZE=FILE_BYTES)
+      IF (FILE_BYTES.LT.0) THEN
+        WRITE (0,*) 'ERROR: cannot open ', TRIM(MOMENTA_FILE)
+        STOP 2
+      ENDIF
+      NEVT = FILE_BYTES / EVENT_BYTES - FIRST
+      IF (MAXEVT.GE.0) NEVT = MIN(NEVT, MAXEVT)
+      IF (NEVT.LE.0) THEN
+        WRITE (0,*) 'ERROR: no events in ', TRIM(MOMENTA_FILE)
+        STOP 3
+      ENDIF
+
+      ALLOCATE (P(0:3,NEXTERNAL,NEVT), MATELEM(NEVT))
+      OPEN (NEWUNIT=IN_UNIT, FILE=TRIM(MOMENTA_FILE), STATUS='OLD',
+     &      ACCESS='STREAM', FORM='UNFORMATTED', ACTION='READ',
+     &      IOSTAT=IOS)
+      IF (IOS.EQ.0) READ (IN_UNIT, POS=FIRST*EVENT_BYTES+1, IOSTAT=IOS) P
+      IF (IOS.NE.0) THEN
+        WRITE (0,*) 'ERROR: cannot read ', NEVT, ' events from ',
+     &              TRIM(MOMENTA_FILE)
+        STOP 2
+      ENDIF
+      CLOSE (IN_UNIT)
+
+      CALL SYSTEM_CLOCK(T0, RATE)
+      DO I = 1, NEVT
+        CALL %(prefix)sSMATRIX(P(0,1,I), MATELEM(I))
+      ENDDO
+      CALL SYSTEM_CLOCK(T1)
+      SECONDS = DBLE(T1 - T0) / DBLE(RATE)
+
+      OUT_UNIT = 6
+      IF (NARGS.GE.2) THEN
+        CALL GET_COMMAND_ARGUMENT(2, ME_FILE)
+        OPEN (NEWUNIT=OUT_UNIT, FILE=TRIM(ME_FILE), STATUS='REPLACE',
+     &        ACTION='WRITE', IOSTAT=IOS)
+        IF (IOS.NE.0) THEN
+          WRITE (0,*) 'ERROR: cannot write ', TRIM(ME_FILE)
+          STOP 2
+        ENDIF
+      ENDIF
+      WRITE (OUT_UNIT, '(ES24.16E3)') (MATELEM(I), I = 1, NEVT)
+      IF (OUT_UNIT.NE.6) CLOSE (OUT_UNIT)
+
+      WRITE (0,'(A,I0,A,ES13.6,A,ES13.6,A)') ' Evaluated ', NEVT,
+     &  ' events: matrix-element time ', SECONDS, ' s, ',
+     &  DBLE(NEVT) / SECONDS, ' events/s'
+      END
+
        SUBROUTINE get_density_matrix(P)
        implicit none
 C---  integer nexternal ! number particles (incoming+outgoing) in the me
